@@ -1,8 +1,8 @@
 //! The "watcher" half of the split. Joins pushed agent status with Zellij's
-//! own pane/tab geometry (the same PaneUpdate/TabUpdate join zj-herd does),
-//! then writes the result to disk as JSON and stops. It never renders a UI
-//! of its own and never navigates — that is `viewer`'s job, in a separate,
-//! non-wasm process.
+//! own pane/tab geometry (the same PaneUpdate/TabUpdate join zj-herd does —
+//! the join itself lives in `shared::JoinState`), then writes the result to
+//! disk as JSON and stops. It never renders a UI of its own and never
+//! navigates — that is `viewer`'s job, in a separate, non-wasm process.
 //!
 //! Loading strategy: `PaneUpdate`/`TabUpdate` are normally only delivered to
 //! plugin instances living in the *active* tab (verified against Zellij's
@@ -34,8 +34,7 @@
 //! to resolve that same host path itself, since it isn't a wasm plugin and
 //! gets no such mount.
 
-use serde::Deserialize;
-use shared::{Row, Snapshot, Status, PING_PIPE_NAME, SESSION_NAME_KEY, STATUS_PIPE_NAME};
+use shared::{JoinState, Status, PING_PIPE_NAME, SESSION_NAME_KEY, STATUS_PIPE_NAME};
 use std::collections::BTreeMap;
 use std::io::Write;
 use zellij_tile::prelude::*;
@@ -52,29 +51,9 @@ const BACKGROUND_MARKER_KEY: &str = "zj_agent_state_bg";
 const SELF_URL_KEY: &str = "zj_agent_state_self_url";
 const CHIME_COMMAND: &[&str] = &["afplay", "/System/Library/Sounds/Glass.aiff"];
 
-#[derive(Deserialize)]
-struct StatusPayload {
-    pane_id: u32,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    agent: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-}
-
-struct StatusEntry {
-    status: Status,
-    agent: String,
-    message: Option<String>,
-}
-
 #[derive(Default)]
 struct State {
-    reported: BTreeMap<u32, StatusEntry>,
-    panes: BTreeMap<u32, (String, usize, bool)>, // pane_id -> (title, tab_position, is_focused)
-    tabs: BTreeMap<usize, String>,         // tab_position -> name
-    active_tab: Option<usize>,
+    state: JoinState,
     generation: u64,
     last_write_ok: bool,
     last_error: String,
@@ -84,30 +63,6 @@ struct State {
 }
 
 impl State {
-    fn rows(&self) -> Vec<Row> {
-        self.reported
-            .iter()
-            .filter_map(|(pane_id, entry)| {
-                let (pane_title, tab_position, active) = self.panes.get(pane_id)?.clone();
-                let tab_name = self
-                    .tabs
-                    .get(&tab_position)
-                    .cloned()
-                    .unwrap_or_else(|| format!("tab {}", tab_position + 1));
-                Some(Row {
-                    pane_id: *pane_id,
-                    status: entry.status,
-                    agent: entry.agent.clone(),
-                    message: entry.message.clone(),
-                    pane_title,
-                    tab_name,
-                    tab_position,
-                    active,
-                })
-            })
-            .collect()
-    }
-
     /// The only side effect this plugin has: a plain WASI file write into the
     /// preopened `/tmp` — no `RunCommands` permission needed for this at
     /// all. No-ops until the session name is known (should be immediate —
@@ -120,9 +75,9 @@ impl State {
             return;
         };
         self.generation += 1;
-        let snapshot = Snapshot {
+        let snapshot = shared::Snapshot {
             generation: self.generation,
-            rows: self.rows(),
+            rows: self.state.rows(),
         };
         let json = match serde_json::to_string_pretty(&snapshot) {
             Ok(j) => j,
@@ -198,31 +153,36 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => true,
-            Event::PaneUpdate(PaneManifest { panes }) => {
-                self.panes.clear();
-                for (tab_position, pane_infos) in panes {
-                    for pane in pane_infos {
-                        if pane.is_plugin {
-                            continue;
-                        }
-                        let active = pane.is_focused && self.active_tab == Some(tab_position);
-                        self.panes.insert(pane.id, (pane.title, tab_position, active));
-                    }
-                }
-                let live: Vec<u32> = self.panes.keys().copied().collect();
-                self.reported.retain(|pane_id, _| live.contains(pane_id));
+            Event::PaneUpdate(manifest) => {
+                let panes = manifest
+                    .panes
+                    .into_iter()
+                    .flat_map(|(tab_position, pane_infos)| {
+                        pane_infos
+                            .into_iter()
+                            .map(move |pane| shared::PaneInfo {
+                                id: pane.id,
+                                title: pane.title,
+                                tab_position,
+                                is_focused: pane.is_focused,
+                                is_plugin: pane.is_plugin,
+                            })
+                    })
+                    .collect();
+                self.state.apply_panes(panes);
                 self.write_snapshot();
                 true
             }
             Event::TabUpdate(tab_infos) => {
-                self.tabs.clear();
-                self.active_tab = None;
-                for tab in tab_infos {
-                    if tab.active {
-                        self.active_tab = Some(tab.position);
-                    }
-                    self.tabs.insert(tab.position, tab.name);
-                }
+                let tabs = tab_infos
+                    .into_iter()
+                    .map(|tab| shared::TabInfo {
+                        position: tab.position,
+                        name: tab.name,
+                        active: tab.active,
+                    })
+                    .collect();
+                self.state.apply_tabs(tabs);
                 self.write_snapshot();
                 true
             }
@@ -245,18 +205,15 @@ impl ZellijPlugin for State {
         let Some(payload) = pipe_message.payload else {
             return false;
         };
-        let Ok(parsed) = serde_json::from_str::<StatusPayload>(payload.trim()) else {
+        let Ok(parsed) = serde_json::from_str::<shared::StatusPayload>(payload.trim()) else {
             return false;
         };
         let status = Status::parse(&parsed.status);
-        let previous = self.reported.get(&parsed.pane_id).map(|e| e.status);
-        self.reported.insert(
+        let previous = self.state.apply_status(
             parsed.pane_id,
-            StatusEntry {
-                status,
-                agent: parsed.agent.unwrap_or_else(|| "agent".to_string()),
-                message: parsed.message.filter(|m| !m.trim().is_empty()),
-            },
+            status,
+            parsed.agent.unwrap_or_else(|| "agent".to_string()),
+            parsed.message.filter(|m| !m.trim().is_empty()),
         );
         if previous != Some(status) && matches!(status, Status::Blocked | Status::Done | Status::Error) {
             run_command(CHIME_COMMAND, BTreeMap::new());
@@ -269,7 +226,7 @@ impl ZellijPlugin for State {
         // A tiny liveness line — proof the watcher is running, not a UI.
         println!(
             "watcher: {} pane(s) joined, gen {}, last write {}",
-            self.reported.len(),
+            self.state.reported_len(),
             self.generation,
             if self.last_write_ok {
                 "ok".to_string()

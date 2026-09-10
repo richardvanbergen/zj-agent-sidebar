@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shared", "watcher", "viewer"]
+members = ["shared", "watcher", "viewer", "sidebar"]
 
 [profile.release]
 opt-level = "z"

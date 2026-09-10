@@ -14,9 +14,8 @@ use crossterm::cursor;
 use crossterm::event::{self, Event as CEvent, KeyCode};
 use crossterm::terminal;
 use crossterm::{execute, queue};
-use shared::{Row, Snapshot, Status, PING_PIPE_NAME, SESSION_NAME_KEY};
-use std::io::{stdout, Write};
-use std::process::{Command, Stdio};
+use shared::{self, Row, Snapshot, Status, TabGroup, PING_PIPE_NAME, SESSION_NAME_KEY};
+use std::io::{stdout, Write};use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use terminal_colorsaurus::{color_palette, QueryOptions};
 
@@ -163,28 +162,7 @@ fn ensure_watcher_running(path: &std::path::Path) {
         .status();
 }
 
-struct TabGroup {
-    tab_name: String,
-    rows: Vec<Row>,
-}
-
-fn grouped_rows(rows: Vec<Row>) -> Vec<TabGroup> {
-    let mut map: std::collections::BTreeMap<usize, TabGroup> = std::collections::BTreeMap::new();
-    for row in rows {
-        map.entry(row.tab_position)
-            .or_insert_with(|| TabGroup { tab_name: row.tab_name.clone(), rows: Vec::new() })
-            .rows
-            .push(row);
-    }
-    let mut groups: Vec<TabGroup> = map.into_values().collect();
-    for g in &mut groups {
-        g.rows.sort_by_key(|r| (r.status.severity(), r.pane_id));
-    }
-    groups.sort_by_key(|g| g.rows.iter().map(|r| r.status.severity()).min().unwrap_or(5));
-    groups
-}
-
-fn flat_rows(groups: &[TabGroup]) -> Vec<&Row> {
+fn flat_rows(groups: &[shared::TabGroup]) -> Vec<&Row> {
     groups.iter().flat_map(|g| g.rows.iter()).collect()
 }
 
@@ -312,7 +290,7 @@ mod tests {
 
     #[test]
     fn render_prints_radar_style() {
-        let groups = grouped_rows(sample_rows());
+        let groups = shared::grouped_rows(sample_rows());
         let mut buf = Vec::new();
         render(&mut buf, &groups, 0, true, 0, None);
         let raw = String::from_utf8(buf).unwrap();
@@ -536,7 +514,7 @@ fn main() -> std::io::Result<()> {
         loop {
             let snapshot = read_snapshot(&path);
             let found = snapshot.is_some();
-            let groups = grouped_rows(snapshot.map(|s| s.rows).unwrap_or_default());
+            let groups = shared::grouped_rows(snapshot.map(|s| s.rows).unwrap_or_default());
             let count = flat_rows(&groups).len();
             if selected >= count {
                 selected = count.saturating_sub(1);

@@ -16,33 +16,86 @@ silently clobbering something you wrote yourself.
 ```sh
 git clone <this repo> ~/Code/zj-agent-state   # or wherever you like
 cd ~/Code/zj-agent-state
-cargo build --release --target wasm32-wasip1 -p watcher
+cargo build --release --target wasm32-wasip1 -p watcher -p sidebar
 cargo build --release -p viewer
 ```
 
-That's it — two binaries, `target/wasm32-wasip1/release/watcher.wasm` and
-`target/release/viewer`. Nothing gets copied anywhere automatically.
+Three binaries: `target/wasm32-wasip1/release/watcher.wasm`,
+`target/wasm32-wasip1/release/sidebar.wasm`, and `target/release/viewer`.
+Nothing gets copied anywhere automatically.
 
-## Install the plugin
+## Install the plugins
 
 ```sh
 mkdir -p ~/.config/zellij/plugins
 cp target/wasm32-wasip1/release/watcher.wasm \
    ~/.config/zellij/plugins/zj-agent-state-watcher.wasm
+cp target/wasm32-wasip1/release/sidebar.wasm \
+   ~/.config/zellij/plugins/zj-agent-state-sidebar.wasm
 ```
 
-Re-run that `cp` after every rebuild. Zellij caches compiled plugins by file
-path, not content, but `viewer` always spawns it with `--skip-plugin-cache`,
-so a stale copy is never actually a problem once the file itself is updated.
+Re-run those `cp`s after every rebuild. Zellij caches compiled plugins by
+file path, not content, but `viewer` always spawns the watcher with
+`--skip-plugin-cache`, so a stale copy is never actually a problem once the
+file itself is updated. The sidebar is loaded fresh on every session start.
 
 `viewer` itself is *not* installed anywhere — point the keybind below
 straight at `target/release/viewer` in your clone. Rebuilding overwrites it
 in place; there's no separate "install" step for it.
 
-## Nothing to add to the layout
+## Sidebar in every tab (the zj-radar mechanism)
 
-No `viewer` pane declared anywhere in your layout — one keybind, described
-below, opens and closes it.
+The sidebar is a plugin pane pinned into your layout's tab templates —
+the same mechanism Zellij uses for its own tab-bar and status-bar, and the
+same one zj-radar uses. One pane in the template = one always-visible
+sidebar in every tab, including new ones created with `Ctrl+t n`.
+
+Both templates are required: Zellij derives `new_tab_template` from
+`default_tab_template` when omitted and drops the `children` call, leaving
+runtime tabs with no focusable pane.
+
+If you don't have a layout file, create `~/.config/zellij/layouts/default.kdl`
+with:
+
+```kdl
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            pane size=26 borderless=true {
+                plugin location="zj-agents-sidebar"
+            }
+            children
+        }
+    }
+    new_tab_template {
+        pane split_direction="vertical" {
+            pane size=26 borderless=true {
+                plugin location="zj-agents-sidebar"
+            }
+            pane focus=true
+        }
+    }
+}
+```
+
+If you already have a layout, add the sidebar pane (the `size=26`
+`split_direction` wrapper) around your existing `children` in
+`default_tab_template`, and give `new_tab_template` the same split with
+`pane focus=true` in place of `children`. Move the sidebar pane after
+`children`/`pane focus=true` to put it on the right side instead. Restart
+Zellij (or start a new session) to load it.
+
+The sidebar needs a plugin alias. Add to `~/.config/zellij/config.kdl`:
+
+```kdl
+plugins {
+    zj-agents-sidebar location="file:~/.config/zellij/plugins/zj-agent-state-sidebar.wasm"
+}
+```
+
+It needs a one-time permission grant (reads pane/tab state + receives the
+status pipe); Zellij prompts on first load. No `RunCommands`, no
+`ChangeApplicationState` — the sidebar only renders.
 
 ## Keybind
 

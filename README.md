@@ -43,11 +43,17 @@ Zellij PaneUpdate/TabUpdate ───▶ watcher ──────────�
   and on every change writes the joined rows to disk atomically
   (temp-file-plus-rename) into its WASI-mounted `/tmp` — no shell-out
   needed for that either.
+- **`sidebar/`** — wasm Zellij plugin, the always-visible rail. The user
+  pins one instance into their layout's tab templates (the zj-radar /
+  zjstatus mechanism — the only Zellij mechanism for "in every tab"), and
+  each instance renders the same `JoinState` join as `watcher` in plain
+  pane style. Render-only: no file, no chime, no navigation.
 - **`viewer/`** — a native binary. Not a Zellij plugin, not wasm, requests no
   Zellij permissions of any kind. Polls the file, renders a list, and on
   Enter shells out to `zellij action`.
-- **`shared/`** — the JSON shape both agree on. The only contract between
-  the two processes.
+- **`shared/`** — the JSON shape both agree on, plus the `JoinState`
+  join and tab-grouping both wasm plugins share. The only contract
+  between the processes.
 
 ## The one non-obvious bit: the `/tmp` path
 

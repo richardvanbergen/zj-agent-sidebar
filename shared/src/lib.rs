@@ -5,6 +5,7 @@
 //! Zellij navigation off of it. Not a production wire format.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
@@ -144,6 +145,151 @@ pub const SESSION_NAME_KEY: &str = "zj_agent_state_session";
 pub const PING_PIPE_NAME: &str = "zj_agent_state.ping.v1";
 /// The pipe `watcher` actually listens on for real agent status.
 pub const STATUS_PIPE_NAME: &str = "zj_agent_state.status.v1";
+
+/// Hook wire payload, shared by `watcher` and `sidebar` — both receive the
+/// same `zellij pipe` broadcasts.
+#[derive(Deserialize)]
+pub struct StatusPayload {
+    pub pane_id: u32,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// One reported agent's status, before joining to geometry.
+#[derive(Clone, Debug)]
+pub struct StatusEntry {
+    pub status: Status,
+    pub agent: String,
+    pub message: Option<String>,
+}
+
+/// Plain-data shapes so `shared` never depends on `zellij-tile` (which would
+/// drag it into every native consumer). The wasm plugins convert from the
+/// real `zellij_tile` event types.
+pub struct PaneInfo {
+    pub id: u32,
+    pub title: String,
+    pub tab_position: usize,
+    pub is_focused: bool,
+    pub is_plugin: bool,
+}
+
+pub struct TabInfo {
+    pub position: usize,
+    pub name: String,
+    pub active: bool,
+}
+
+/// The PaneUpdate/TabUpdate/status-pipe join, shared verbatim by `watcher`
+/// (which writes it to disk) and `sidebar` (which renders it). Push-only:
+/// callers feed events in, state comes back out via `rows()`.
+#[derive(Default)]
+pub struct JoinState {
+    reported: BTreeMap<u32, StatusEntry>,
+    panes: BTreeMap<u32, (String, usize, bool)>, // pane_id -> (title, tab_position, active)
+    tabs: BTreeMap<usize, String>,               // tab_position -> name
+    active_tab: Option<usize>,
+}
+
+impl JoinState {
+    pub fn apply_panes(&mut self, panes: Vec<PaneInfo>) {
+        self.panes.clear();
+        for pane in panes {
+            if pane.is_plugin {
+                continue;
+            }
+            let active = pane.is_focused && self.active_tab == Some(pane.tab_position);
+            self.panes.insert(pane.id, (pane.title, pane.tab_position, active));
+        }
+        // Status for a pane that no longer exists is dead weight everywhere
+        // downstream — drop it here, once.
+        let live: Vec<u32> = self.panes.keys().copied().collect();
+        self.reported.retain(|pane_id, _| live.contains(pane_id));
+    }
+
+    pub fn apply_tabs(&mut self, tabs: Vec<TabInfo>) {
+        self.tabs.clear();
+        self.active_tab = None;
+        for tab in tabs {
+            if tab.active {
+                self.active_tab = Some(tab.position);
+            }
+            self.tabs.insert(tab.position, tab.name);
+        }
+    }
+
+    /// Returns the row's previous status so callers can chime on edges.
+    pub fn apply_status(
+        &mut self,
+        pane_id: u32,
+        status: Status,
+        agent: String,
+        message: Option<String>,
+    ) -> Option<Status> {
+        let previous = self.reported.get(&pane_id).map(|e| e.status);
+        self.reported.insert(
+            pane_id,
+            StatusEntry { status, agent, message },
+        );
+        previous
+    }
+
+    pub fn reported_len(&self) -> usize {
+        self.reported.len()
+    }
+
+    pub fn rows(&self) -> Vec<Row> {
+        self.reported
+            .iter()
+            .filter_map(|(pane_id, entry)| {
+                let (pane_title, tab_position, active) = self.panes.get(pane_id)?.clone();
+                let tab_name = self
+                    .tabs
+                    .get(&tab_position)
+                    .cloned()
+                    .unwrap_or_else(|| format!("tab {}", tab_position + 1));
+                Some(Row {
+                    pane_id: *pane_id,
+                    status: entry.status,
+                    agent: entry.agent.clone(),
+                    message: entry.message.clone(),
+                    pane_title,
+                    tab_name,
+                    tab_position,
+                    active,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A tab's worth of rows, sorted worst-first inside the tab, tabs sorted
+/// worst-first overall. Shared by `viewer` and `sidebar` so both orderings
+/// agree.
+pub struct TabGroup {
+    pub tab_name: String,
+    pub rows: Vec<Row>,
+}
+
+pub fn grouped_rows(rows: Vec<Row>) -> Vec<TabGroup> {
+    let mut map: BTreeMap<usize, TabGroup> = BTreeMap::new();
+    for row in rows {
+        map.entry(row.tab_position)
+            .or_insert_with(|| TabGroup { tab_name: row.tab_name.clone(), rows: Vec::new() })
+            .rows
+            .push(row);
+    }
+    let mut groups: Vec<TabGroup> = map.into_values().collect();
+    for g in &mut groups {
+        g.rows.sort_by_key(|r| (r.status.severity(), r.pane_id));
+    }
+    groups.sort_by_key(|g| g.rows.iter().map(|r| r.status.severity()).min().unwrap_or(5));
+    groups
+}
 
 #[cfg(test)]
 mod path_tests {

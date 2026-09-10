@@ -1,0 +1,9 @@
+[package]
+name = "sidebar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared = { path = "../shared" }
+zellij-tile = "0.45.1"
+serde_json = "1"
