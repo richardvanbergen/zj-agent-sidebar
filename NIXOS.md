@@ -5,6 +5,7 @@ Flake builds everything `INSTALL.md` builds, as Nix packages:
 - `zj-agent-sidebar` (default): `bin/zj-agent-viewer` + `lib/zellij/*.wasm` (watcher, sidebar)
 - `zj-agent-sidebar-viewer`: viewer only
 - `zj-agent-sidebar-wasm`: the two plugin wasms only
+- `agents`: `claude-code`, `codex`, and `opencode` from nixpkgs-unstable
 - `devShells.default`: Rust toolchain (wasm32-wasip1 target included), Zellij, python3, rust-analyzer
 
 The Linux chime patch (`afplay` → `paplay` + freedesktop sound) is applied
@@ -15,6 +16,8 @@ automatically in the Nix builds, so nothing to edit there.
 ```sh
 nix build .            # or: nix build .#zj-agent-sidebar-viewer
 nix shell .            # puts zj-agent-viewer on PATH
+nix shell .#agents     # puts claude / codex / opencode on PATH
+nix profile install .#agents   # or install the agents persistently
 nix develop            # dev shell for hacking on the repo itself
 ```
 

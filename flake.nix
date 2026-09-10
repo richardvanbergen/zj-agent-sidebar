@@ -86,13 +86,24 @@
           '';
         };
 
+        # AI coding agents (Claude Code, Codex, opencode) — all present in
+        # nixpkgs-unstable; single install target for a dev box.
+        agents = pkgs.symlinkJoin {
+          name = "llm-agents";
+          paths = with pkgs; [
+            claude-code
+            codex
+            opencode
+          ];
+        };
+
         default = pkgs.symlinkJoin {
           name = "zj-agent-sidebar";
           paths = [ viewer wasmPlugins ];
         };
       in
       {
-        packages = { inherit viewer wasmPlugins default; };
+        packages = { inherit viewer wasmPlugins agents default; };
 
         devShells.default = pkgs.mkShell {
           packages = [
