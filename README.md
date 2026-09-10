@@ -34,12 +34,15 @@ Zellij PaneUpdate/TabUpdate ───▶ watcher ──────────�
                      `zellij action go-to-tab` / `focus-pane-id`
 ```
 
-- **`watcher/`** — wasm Zellij plugin. Requests only `ReadApplicationState` +
-  `ReadCliPipes` (no `ChangeApplicationState`, no `RunCommands` — it never
-  navigates and never runs a command). Joins pushed agent status to Zellij's
-  own pane/tab geometry, same as zj-herd, and on every change writes the
-  joined rows to disk with a plain `std::fs::write` into its WASI-mounted
-  `/tmp` — no shell-out needed for that either.
+- **`watcher/`** — wasm Zellij plugin. Requests `ReadApplicationState` +
+  `ReadCliPipes` + `ChangeApplicationState` + `RunCommands` (the last two
+  only so the bootstrap pane can promote itself to an invisible background
+  instance and close itself, and so the chime can `afplay` on a status
+  edge — it never navigates and never runs a command otherwise). Joins
+  pushed agent status to Zellij's own pane/tab geometry, same as zj-herd,
+  and on every change writes the joined rows to disk atomically
+  (temp-file-plus-rename) into its WASI-mounted `/tmp` — no shell-out
+  needed for that either.
 - **`viewer/`** — a native binary. Not a Zellij plugin, not wasm, requests no
   Zellij permissions of any kind. Polls the file, renders a list, and on
   Enter shells out to `zellij action`.
@@ -101,12 +104,13 @@ script's header) — it's the same script pointed at this project's pipe name
 
 ## What this deliberately does not do (it's a spike)
 
-- No session-scoping (`ZELLIJ_SESSION_NAME` isn't in the path) — one running
-  watcher's state clobbers another's. Fine for "does the split work at all",
-  wrong for two sessions at once.
-- No debounce/atomic-rename on write (zj-radar's own snapshot code does
-  temp-file-plus-rename for exactly this reason) — a viewer read mid-write
-  could occasionally see a half-written file.
+- `viewer` polls on a 300ms timer rather than watching the file — fine for a
+  spike, a real version would use a file-watch crate or have `watcher` also
+  write to a fifo/socket.
+- Single global path per session, not per-plugin-instance — only makes sense
+  with one watcher loaded at a time (session-scoping itself *is* done: the
+  state file lives under `zj-agent-state/<session>/`, per
+  `shared::state_path`).
 - `viewer` polls on a 300ms timer rather than watching the file — fine for a
   spike, a real version would use a file-watch crate or have `watcher` also
   write to a fifo/socket.

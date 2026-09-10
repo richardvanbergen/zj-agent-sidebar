@@ -3,6 +3,7 @@
 //!   1. on launch, makes sure `watcher` is actually running (`ensure_watcher_running`),
 //!   2. polls `watcher`'s JSON file and renders it,
 //!   3. on Enter, shells out to `zellij action go-to-tab` / `focus-pane-id`.
+//!
 //! `watcher` is never auto-loaded at session start — it only ever exists
 //! because a user opened `viewer`, which is the explicit action that implies
 //! they want it. This is the thing this whole spike exists to prove: that
@@ -92,11 +93,12 @@ fn current_generation(path: &std::path::Path) -> u64 {
 /// The only place this program ever starts another program. Called once at
 /// launch, before anything is rendered: probe for a live `watcher` by asking
 /// it to bump `generation` and watching for that; if nothing answers within
-/// the window, spawn one. The lockfile exists purely so two `viewer`s
-/// launched at nearly the same moment (the sidebar in one tab, a floating
-/// one you just opened in another) don't both decide to spawn — this is a
-/// personal single-user tool, so a best-effort file lock is enough; it isn't
-/// guarding against real concurrent writers.
+/// the window, spawn one. The lockfile holds an advisory flock (fd-lock),
+/// released by the kernel the instant the owning process dies, so a stale
+/// lock is impossible — two `viewer`s launched at nearly the same moment
+/// (the sidebar in one tab, a floating one you just opened in another)
+/// can't both decide to spawn. This is a personal single-user tool; the
+/// lock isn't guarding against real concurrent writers, only double-spawn.
 fn ensure_watcher_running(path: &std::path::Path) {
     let before = current_generation(path);
     let _ = Command::new("zellij")
@@ -121,12 +123,21 @@ fn ensure_watcher_running(path: &std::path::Path) {
     if let Some(parent) = lock_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(_lock) = std::fs::OpenOptions::new()
+    // Advisory lock, not an existence check: a `create_new` lockfile left
+    // behind by a crashed viewer would block every future spawn forever.
+    // An flock is released by the kernel the instant the owning process
+    // dies, so a stale lock is impossible.
+    let Ok(lock_file) = std::fs::OpenOptions::new()
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&lock_path)
     else {
-        return; // another viewer already decided to spawn one
+        return; // couldn't even open the lock file — don't risk double-spawn
+    };
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let Ok(_guard) = lock.try_write() else {
+        return; // another viewer holds the lock and is already spawning
     };
 
     let url = format!("file:{}", shared::watcher_wasm_host_path());
@@ -150,8 +161,6 @@ fn ensure_watcher_running(path: &std::path::Path) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-
-    let _ = std::fs::remove_file(&lock_path);
 }
 
 struct TabGroup {

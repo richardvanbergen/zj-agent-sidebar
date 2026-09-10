@@ -132,13 +132,19 @@ impl State {
                 return;
             }
         };
+        // Write to a sibling temp file then rename: `File::create` truncates
+        // in place, so `viewer`'s 300ms poll could read a half-written JSON.
+        // Rename is atomic within the same directory — a reader sees either
+        // the old snapshot or the complete new one, never a torn file.
         let path = shared::state_path(&session);
+        let tmp_path = format!("{path}.tmp");
         let result = std::path::Path::new(&path)
             .parent()
             .map(std::fs::create_dir_all)
             .unwrap_or(Ok(()))
-            .and_then(|_| std::fs::File::create(&path))
-            .and_then(|mut f| f.write_all(json.as_bytes()));
+            .and_then(|_| std::fs::File::create(&tmp_path))
+            .and_then(|mut f| f.write_all(json.as_bytes()))
+            .and_then(|_| std::fs::rename(&tmp_path, &path));
         match result {
             Ok(()) => self.last_write_ok = true,
             Err(e) => {
