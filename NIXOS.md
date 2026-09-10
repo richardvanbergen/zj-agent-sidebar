@@ -21,6 +21,23 @@ nix profile install .#agents   # or install the agents persistently
 nix develop            # dev shell for hacking on the repo itself
 ```
 
+## NixOS rebuild switch
+
+Import the module in your system flake:
+
+```nix
+inputs.zj-agent-sidebar.url = "github:richardvanbergen/zj-agent-sidebar";
+# outputs: modules = [ inputs.zj-agent-sidebar.nixosModules.default ];
+
+programs.zj-agent-sidebar.enable = true;        # viewer + plugin wasms
+programs.zj-agent-sidebar.agents.enable = true; # claude-code, codex, opencode
+```
+
+Then `nixos-rebuild switch`. The wasms land in the nix store
+(`lib/zellij/*.wasm`); copy them to `~/.config/zellij/plugins/` by hand or
+symlink — or use the home-manager module instead, which manages
+`~/.config/zellij/plugins/` directly.
+
 ## Home Manager
 
 ```nix

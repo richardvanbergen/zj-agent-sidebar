@@ -113,8 +113,35 @@
             pkgs.rust-analyzer
           ];
         };
-      })
+    }
     // {
+      # System-level wiring for NixOS rebuild switch. Adds the viewer + both
+      # plugin wasms (and optionally the AI agents) to
+      # environment.systemPackages. Still never touches config.kdl — see
+      # NIXOS.md for the manual paste.
+      nixosModules.default =
+        { lib
+        , pkgs
+        , ...
+        }: {
+          options.programs.zj-agent-sidebar = {
+            enable = lib.mkEnableOption "zj-agent-sidebar Zellij plugins and viewer";
+            package = lib.mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "default" { };
+
+            agents = {
+              enable = lib.mkEnableOption "claude-code, codex and opencode system-wide";
+              package = lib.mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "agents" { };
+            };
+          };
+
+          config = lib.mkIf config.programs.zj-agent-sidebar.enable {
+            environment.systemPackages = [
+              config.programs.zj-agent-sidebar.package
+            ] ++ lib.optional config.programs.zj-agent-sidebar.agents.enable
+              config.programs.zj-agent-sidebar.agents.package;
+          };
+        };
+
       # Optional home-manager wiring. Follows INSTALL.md's "manual on
       # purpose" rule: installs the plugin wasms and puts `viewer` on PATH,
       # but never touches your config.kdl or agent hook configs.
