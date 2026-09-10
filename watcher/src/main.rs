@@ -101,7 +101,16 @@ impl State {
             .and_then(|mut f| f.write_all(json.as_bytes()))
             .and_then(|_| std::fs::rename(&tmp_path, &path));
         match result {
-            Ok(()) => self.last_write_ok = true,
+            Ok(()) => {
+                self.last_write_ok = true;
+                // Push the snapshot to every other plugin in the session —
+                // `sidebar` instances render it instantly rather than
+                // waiting for their file-refresh timer. Needs
+                // MessageAndLaunchOtherPlugins; nothing else ever runs.
+                pipe_message_to_plugin(
+                    MessageToPlugin::new(shared::SYNC_PIPE_NAME).with_payload(json),
+                );
+            }
             Err(e) => {
                 self.last_write_ok = false;
                 self.last_error = e.to_string();
@@ -125,6 +134,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadCliPipes,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
+            PermissionType::MessageAndLaunchOtherPlugins,
         ]);
         subscribe(&[
             EventType::PaneUpdate,

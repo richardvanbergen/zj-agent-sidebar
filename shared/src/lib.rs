@@ -149,6 +149,10 @@ pub const STATUS_PIPE_NAME: &str = "zj_agent_state.status.v1";
 /// `MessagePlugin`): payloads are plain words — `toggle`, `hide`, `show`,
 /// `jump`.
 pub const SIDEBAR_PIPE_NAME: &str = "zj_agent_state.sidebar.v1";
+/// `watcher` broadcasts the full snapshot under this name to all plugins
+/// after every state-file write, so `sidebar` instances update instantly
+/// instead of waiting for their file-refresh timer.
+pub const SYNC_PIPE_NAME: &str = "zj_agent_state.sync.v1";
 
 /// Hook wire payload, shared by `watcher` and `sidebar` — both receive the
 /// same `zellij pipe` broadcasts.

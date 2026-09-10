@@ -41,7 +41,10 @@
 //! refresh it immediately). That's inherent to the layout-template approach
 //! and matches zj-radar's behaviour.
 
-use shared::{JoinState, Row, Status, PING_PIPE_NAME, SESSION_NAME_KEY, SIDEBAR_PIPE_NAME, STATUS_PIPE_NAME};
+use shared::{
+    JoinState, Row, Snapshot, Status, PING_PIPE_NAME, SESSION_NAME_KEY, SIDEBAR_PIPE_NAME,
+    STATUS_PIPE_NAME, SYNC_PIPE_NAME,
+};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -49,8 +52,12 @@ use zellij_tile::prelude::*;
 /// URL of `watcher.wasm`, so an instance that finds no state file can spawn
 /// the watcher itself.
 const WATCHER_URL_KEY: &str = "zj_agent_state_watcher_url";
-/// How often each instance re-reads the shared state file.
-const REFRESH_SECS: f64 = 2.0;
+/// First timer tick: fast, so a fresh instance shows the global state
+/// almost immediately (host queries are only safe from event handlers).
+const FIRST_TICK_SECS: f64 = 0.3;
+/// Backstop tick after that: the watcher's sync pushes do the real-time
+/// updates; this re-read only exists to recover if the watcher died.
+const BACKSTOP_TICK_SECS: f64 = 10.0;
 
 const DIM: &str = "\x1b[90m";
 const BOLD: &str = "\x1b[1m";
@@ -163,7 +170,7 @@ impl ZellijPlugin for Sidebar {
             PermissionType::ChangeApplicationState,
         ]);
         subscribe(&[EventType::PaneUpdate, EventType::TabUpdate, EventType::Key, EventType::Timer]);
-        set_timeout(REFRESH_SECS);
+        set_timeout(FIRST_TICK_SECS);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -194,8 +201,9 @@ impl ZellijPlugin for Sidebar {
             }
             Event::Timer(_) => {
                 // First tick resolves the session (host queries are only
-                // safe from event handlers, not load); every tick refreshes
-                // from the shared state file.
+                // safe from event handlers, not load); ticks after that
+                // exist only to recover if the watcher died — realtime
+                // updates arrive via its sync broadcasts.
                 if self.ensure_session() {
                     self.refresh_from_file();
                     if !self.has_state_file {
@@ -203,7 +211,7 @@ impl ZellijPlugin for Sidebar {
                         self.ensure_watcher();
                     }
                 }
-                set_timeout(REFRESH_SECS);
+                set_timeout(BACKSTOP_TICK_SECS);
                 true
             }
             Event::PaneUpdate(manifest) => {                let panes = manifest
@@ -265,6 +273,16 @@ impl ZellijPlugin for Sidebar {
                 }
                 Some("jump") => self.jump_to_selected(),
                 _ => {}
+            }
+            return true;
+        }
+        if pipe_message.name == SYNC_PIPE_NAME {
+            // Watcher pushed the full snapshot — instant update, no file
+            // read, no polling.
+            if let Some(payload) = pipe_message.payload {
+                if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&payload) {
+                    self.state.seed_from_rows(snapshot.rows);
+                }
             }
             return true;
         }
