@@ -26,15 +26,31 @@
 //!   deliberately ignores per-instance selection: every instance computes
 //!   the same top-severity row and issues the identical jump — consistent
 //!   last-writer-wins, no cross-tab coordination needed.
+//! - Shared state: status pushes and pane/tab events are delivered
+//!   selectively (a fresh instance starts from nothing), so every instance
+//!   also reads `watcher`'s session state file — on load and again every
+//!   `REFRESH_SECS` via a timer — and seeds its join state from it. All
+//!   instances therefore converge on the same global state within seconds,
+//!   regardless of delivery quirks. If the state file doesn't exist, the
+//!   instance spawns the background `watcher` itself (via the
+//!   `zj_agent_state_watcher_url` config key from the layout), so the
+//!   sidebar is self-sufficient: no viewer ever needed.
 //!
 //! Active-tab-only delivery means an instance in a background tab holds
 //! stale geometry until its tab is activated (then PaneUpdate/TabUpdate
 //! refresh it immediately). That's inherent to the layout-template approach
 //! and matches zj-radar's behaviour.
 
-use shared::{JoinState, Row, Status, PING_PIPE_NAME, SIDEBAR_PIPE_NAME, STATUS_PIPE_NAME};
+use shared::{JoinState, Row, Status, PING_PIPE_NAME, SESSION_NAME_KEY, SIDEBAR_PIPE_NAME, STATUS_PIPE_NAME};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
+
+/// Config key on the sidebar plugin (set in the layout) giving the `file:`
+/// URL of `watcher.wasm`, so an instance that finds no state file can spawn
+/// the watcher itself.
+const WATCHER_URL_KEY: &str = "zj_agent_state_watcher_url";
+/// How often each instance re-reads the shared state file.
+const REFRESH_SECS: f64 = 2.0;
 
 const DIM: &str = "\x1b[90m";
 const BOLD: &str = "\x1b[1m";
@@ -50,9 +66,47 @@ struct Sidebar {
     /// Mirror of the pane's real visibility, confirmed by `Visible` events —
     /// never assumed, so `toggle` is right even if something else hid us.
     hidden: bool,
+    /// `file:` URL of watcher.wasm from the layout config, if given.
+    watcher_url: Option<String>,
+    /// Whether we found (or spawned a watcher that will create) the state
+    /// file — gates the one-time watcher spawn.
+    has_state_file: bool,
 }
 
 impl Sidebar {
+    fn session_name(&self) -> String {
+        get_session_environment_variables()
+            .get("ZELLIJ_SESSION_NAME")
+            .cloned()
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    /// Read `watcher`'s state file and merge it into the join state. The
+    /// WASI `/tmp` is the same mount `watcher` writes to, so this is the
+    /// shared ground truth between all instances of the session.
+    fn refresh_from_file(&mut self) {
+        let session = self.session_name();
+        let Ok(raw) = std::fs::read_to_string(shared::state_path(&session)) else {
+            return;
+        };
+        let Ok(snapshot) = serde_json::from_str::<shared::Snapshot>(&raw) else {
+            return;
+        };
+        self.state.seed_from_rows(snapshot.rows);
+    }
+
+    fn ensure_watcher(&mut self) {
+        if self.has_state_file {
+            return;
+        }
+        if let Some(url) = self.watcher_url.clone() {
+            let mut config = BTreeMap::new();
+            config.insert(SESSION_NAME_KEY.to_string(), self.session_name());
+            load_new_plugin(&url, config, true, false);
+            self.has_state_file = true; // don't respawn on every render path
+        }
+    }
+
     /// Flat row list in render order, so selection and rendering agree.
     fn flat(&self) -> Vec<Row> {
         shared::grouped_rows(self.state.rows())
@@ -80,13 +134,20 @@ impl Sidebar {
 register_plugin!(Sidebar);
 
 impl ZellijPlugin for Sidebar {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
+        self.watcher_url = configuration.get(WATCHER_URL_KEY).cloned();
+        self.has_state_file = std::fs::read_to_string(shared::state_path(&self.session_name())).is_ok();
+        if !self.has_state_file {
+            self.ensure_watcher();
+        }
+        self.refresh_from_file();
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::ChangeApplicationState,
         ]);
-        subscribe(&[EventType::PaneUpdate, EventType::TabUpdate, EventType::Key]);
+        subscribe(&[EventType::PaneUpdate, EventType::TabUpdate, EventType::Key, EventType::Timer]);
+        set_timeout(REFRESH_SECS);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -115,8 +176,18 @@ impl ZellijPlugin for Sidebar {
                 }
                 true
             }
-            Event::PaneUpdate(manifest) => {
-                let panes = manifest
+            Event::Timer(_) => {
+                self.refresh_from_file();
+                if !self.has_state_file {
+                    // Watcher may have been slow to create the file; re-check.
+                    self.has_state_file =
+                        std::fs::read_to_string(shared::state_path(&self.session_name())).is_ok();
+                    self.ensure_watcher();
+                }
+                set_timeout(REFRESH_SECS);
+                true
+            }
+            Event::PaneUpdate(manifest) => {                let panes = manifest
                     .panes
                     .into_iter()
                     .flat_map(|(tab_position, pane_infos)| {

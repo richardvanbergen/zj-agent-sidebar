@@ -246,6 +246,25 @@ impl JoinState {
         self.reported.len()
     }
 
+    /// Bootstrap from a previously joined snapshot (e.g. `watcher`'s state
+    /// file): lets a freshly loaded instance start from the full global
+    /// state instead of waiting for the next push.
+    pub fn seed_from_rows(&mut self, rows: Vec<Row>) {
+        for row in rows {
+            self.reported.insert(
+                row.pane_id,
+                StatusEntry {
+                    status: row.status,
+                    agent: row.agent.clone(),
+                    message: row.message.clone(),
+                },
+            );
+            self.panes
+                .insert(row.pane_id, (row.pane_title.clone(), row.tab_position, row.active));
+            self.tabs.insert(row.tab_position, row.tab_name.clone());
+        }
+    }
+
     pub fn rows(&self) -> Vec<Row> {
         self.reported
             .iter()
