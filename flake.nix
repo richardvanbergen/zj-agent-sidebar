@@ -35,7 +35,7 @@
 
         # The chime is hardcoded to macOS `afplay` (INSTALL.md, "What's still
         # manual"). Patch to PulseAudio's player for Linux builds.
-        chimePatch = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+        chimePatch = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           substituteInPlace watcher/src/main.rs \
             --replace-fail '["afplay", "/System/Library/Sounds/Glass.aiff"]' \
                            '["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"]'
