@@ -145,6 +145,10 @@ pub const SESSION_NAME_KEY: &str = "zj_agent_state_session";
 pub const PING_PIPE_NAME: &str = "zj_agent_state.ping.v1";
 /// The pipe `watcher` actually listens on for real agent status.
 pub const STATUS_PIPE_NAME: &str = "zj_agent_state.status.v1";
+/// The pipe the user's keybinds use to talk to the `sidebar` (via
+/// `MessagePlugin`): payloads are plain words — `toggle`, `hide`, `show`,
+/// `jump`.
+pub const SIDEBAR_PIPE_NAME: &str = "zj_agent_state.sidebar.v1";
 
 /// Hook wire payload, shared by `watcher` and `sidebar` — both receive the
 /// same `zellij pipe` broadcasts.

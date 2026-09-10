@@ -61,7 +61,7 @@ with:
 layout {
     default_tab_template {
         pane split_direction="vertical" {
-            pane size=26 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="zj-agents-sidebar"
             }
             children
@@ -69,7 +69,7 @@ layout {
     }
     new_tab_template {
         pane split_direction="vertical" {
-            pane size=26 borderless=true {
+            pane size=32 borderless=true {
                 plugin location="zj-agents-sidebar"
             }
             pane focus=true
