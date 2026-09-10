@@ -201,7 +201,8 @@ fn jump_to(row: &Row) {
     jump_to_pane(&PaneHit {
         id: row.pane_id,
         tab_position: row.tab_position,
-        focused: false,
+        floating: false,
+        hidden: false,
     });
 }
 
@@ -351,7 +352,10 @@ fn own_pane_id() -> Option<u32> {
 struct PaneHit {
     id: u32,
     tab_position: usize,
-    focused: bool,
+    floating: bool,
+    /// A hidden floating pane reports `is_suppressed` — it's still alive
+    /// (the viewer keeps polling) but not on screen.
+    hidden: bool,
 }
 
 fn agent_panes() -> Vec<PaneHit> {
@@ -382,7 +386,8 @@ fn agent_panes() -> Vec<PaneHit> {
             Some(PaneHit {
                 id: pane.get("id")?.as_u64()? as u32,
                 tab_position: pane.get("tab_position")?.as_u64()? as usize,
-                focused: pane.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false),
+                floating: pane.get("is_floating").and_then(|v| v.as_bool()).unwrap_or(false),
+                hidden: pane.get("is_suppressed").and_then(|v| v.as_bool()).unwrap_or(false),
             })
         })
         .collect()
@@ -461,24 +466,28 @@ fn run_jump() -> bool {
     true
 }
 
-/// Default (no args): the Alt+A toggle, aware of where the pane lives.
-/// - pane focused on us → close it
-/// - pane in this tab, not focused → focus it
-/// - pane in another tab → jump there (never kill it from afar — that was
-///   the old behaviour that made Alt+A a trap)
+/// Default (no args): the Alt+A toggle, decided entirely from pane state —
+/// never from focus. Focus can't be used here: the keybind spawns this very
+/// process in a throwaway pane that has already stolen focus by the time we
+/// can query, so "the agents pane is focused" is never observable.
+/// - agents pane in this tab, floating, on screen → hide it (stays alive)
+/// - agents pane in this tab, floating, hidden → show + focus it
+/// - agents pane in this tab, embedded/tiled → focus it
+/// - agents pane in another tab → jump there (never kill it from afar)
 /// - no pane anywhere → fall through and open one here
 fn run_toggle() -> bool {
-    let own = own_pane_id();
     let cur_tab = current_tab_position();
     let panes = agent_panes();
-    let here = panes
-        .iter()
-        .find(|p| Some(p.tab_position) == cur_tab)
-        .or_else(|| panes.iter().find(|p| Some(p.id) == own));
+    let here = panes.iter().find(|p| Some(p.tab_position) == cur_tab);
     if let Some(hit) = here {
-        if own == Some(hit.id) && hit.focused {
+        if hit.floating && hit.hidden {
             let _ = Command::new("zellij")
-                .args(["action", "close-pane", "-p", &hit.id.to_string()])
+                .args(["action", "show-floating-panes"])
+                .status();
+            jump_to_pane(hit);
+        } else if hit.floating {
+            let _ = Command::new("zellij")
+                .args(["action", "hide-floating-panes"])
                 .status();
         } else {
             jump_to_pane(hit);
