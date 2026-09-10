@@ -120,9 +120,9 @@ bind "Alt g" {
 - **Alt a** — hide/show the sidebar. A hidden sidebar stays loaded (its
   state keeps updating), so showing it again is instant. Works from any
   tab.
-- **Alt g** — jump to the selected agent's pane: switches to its tab and
-  focuses it. The sidebar is also directly interactive: focus it (pane
-  navigation) and use Up/Down to move the selection, Enter to jump.
+- **Alt g** — jump to the sidebar itself: focuses the sidebar pane in the
+  current tab. Then Up/Down (or j/k) move the selection and Enter jumps to
+  that agent's pane (switching tabs if needed).
 
 The `plugins` alias in `config.kdl` must use the real absolute `file:` path
 to the wasm — plugin locations are **not** `~`-expanded everywhere.
