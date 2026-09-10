@@ -60,7 +60,9 @@
         };
 
         # Zellij plugins: target/wasm32-wasip1/release/{watcher,sidebar}.wasm
-        wasmPlugins = pkgs.rustPlatform.buildRustPackage {
+        # Uses the pinned toolchain above — stock nixpkgs rustc has no
+        # wasm32-wasip1 std.
+        wasmPlugins = rustPlatform.buildRustPackage {
           pname = "zj-agent-sidebar-wasm";
           version = "0.1.0";
           src = self;
