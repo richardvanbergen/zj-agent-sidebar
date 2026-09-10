@@ -120,7 +120,8 @@
       # environment.systemPackages. Still never touches config.kdl — see
       # NIXOS.md for the manual paste.
       nixosModules.default =
-        { lib
+        { config
+        , lib
         , pkgs
         , ...
         }: {
