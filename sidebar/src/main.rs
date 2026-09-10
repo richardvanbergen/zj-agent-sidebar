@@ -188,6 +188,7 @@ impl Sidebar {
         let selected = self.selected.min(rows.len() - 1);
         self.jump_to_row(&rows[selected]);
     }
+}
 
 register_plugin!(Sidebar);
 
