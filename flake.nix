@@ -21,6 +21,7 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
+          config.allowUnfree = true;
         };
 
         # pinned toolchain with the wasm32-wasip1 std, per INSTALL.md
