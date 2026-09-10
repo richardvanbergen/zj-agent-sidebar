@@ -71,21 +71,40 @@ struct Sidebar {
     /// Whether we found (or spawned a watcher that will create) the state
     /// file — gates the one-time watcher spawn.
     has_state_file: bool,
+    /// Session name, lazily resolved — see `ensure_session`.
+    session: Option<String>,
 }
 
 impl Sidebar {
-    fn session_name(&self) -> String {
-        get_session_environment_variables()
+    /// Lazily resolved: `get_session_environment_variables` panics during
+    /// `load()` (host returns no payload before the handshake completes —
+    /// shim.rs's unwrap on the missing response), so it's only ever called
+    /// from an event handler, and only once.
+    fn ensure_session(&mut self) -> bool {
+        if self.session.is_some() {
+            return true;
+        }
+        if let Ok(name) = std::env::var("ZELLIJ_SESSION_NAME") {
+            self.session = Some(name);
+            return true;
+        }
+        let Some(name) = get_session_environment_variables()
             .get("ZELLIJ_SESSION_NAME")
             .cloned()
-            .unwrap_or_else(|| "default".to_string())
+        else {
+            return false;
+        };
+        self.session = Some(name);
+        true
     }
 
     /// Read `watcher`'s state file and merge it into the join state. The
     /// WASI `/tmp` is the same mount `watcher` writes to, so this is the
     /// shared ground truth between all instances of the session.
     fn refresh_from_file(&mut self) {
-        let session = self.session_name();
+        let Some(session) = self.session.clone() else {
+            return;
+        };
         let Ok(raw) = std::fs::read_to_string(shared::state_path(&session)) else {
             return;
         };
@@ -100,10 +119,12 @@ impl Sidebar {
             return;
         }
         if let Some(url) = self.watcher_url.clone() {
-            let mut config = BTreeMap::new();
-            config.insert(SESSION_NAME_KEY.to_string(), self.session_name());
-            load_new_plugin(&url, config, true, false);
-            self.has_state_file = true; // don't respawn on every render path
+            if let Some(session) = self.session.clone() {
+                let mut config = BTreeMap::new();
+                config.insert(SESSION_NAME_KEY.to_string(), session);
+                load_new_plugin(&url, config, true, false);
+                self.has_state_file = true; // don't respawn on every render path
+            }
         }
     }
 
@@ -136,11 +157,6 @@ register_plugin!(Sidebar);
 impl ZellijPlugin for Sidebar {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.watcher_url = configuration.get(WATCHER_URL_KEY).cloned();
-        self.has_state_file = std::fs::read_to_string(shared::state_path(&self.session_name())).is_ok();
-        if !self.has_state_file {
-            self.ensure_watcher();
-        }
-        self.refresh_from_file();
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
@@ -177,12 +193,15 @@ impl ZellijPlugin for Sidebar {
                 true
             }
             Event::Timer(_) => {
-                self.refresh_from_file();
-                if !self.has_state_file {
-                    // Watcher may have been slow to create the file; re-check.
-                    self.has_state_file =
-                        std::fs::read_to_string(shared::state_path(&self.session_name())).is_ok();
-                    self.ensure_watcher();
+                // First tick resolves the session (host queries are only
+                // safe from event handlers, not load); every tick refreshes
+                // from the shared state file.
+                if self.ensure_session() {
+                    self.refresh_from_file();
+                    if !self.has_state_file {
+                        self.has_state_file = std::fs::read_to_string(shared::state_path(&self.session.clone().unwrap_or_default())).is_ok();
+                        self.ensure_watcher();
+                    }
                 }
                 set_timeout(REFRESH_SECS);
                 true
