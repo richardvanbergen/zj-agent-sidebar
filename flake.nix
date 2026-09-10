@@ -113,7 +113,7 @@
             pkgs.rust-analyzer
           ];
         };
-    }
+      })
     // {
       # System-level wiring for NixOS rebuild switch. Adds the viewer + both
       # plugin wasms (and optionally the AI agents) to
