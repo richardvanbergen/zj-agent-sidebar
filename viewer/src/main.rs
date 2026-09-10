@@ -198,15 +198,11 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn jump_to(row: &Row) {
-    // go-to-tab first: Zellij's own focus-pane-id does not switch tabs
-    // (zj-herd hit the same gap on `focus_pane_with_id` inside the plugin
-    // API — the CLI action shares the underlying limitation).
-    let _ = Command::new("zellij")
-        .args(["action", "go-to-tab", &(row.tab_position + 1).to_string()])
-        .status();
-    let _ = Command::new("zellij")
-        .args(["action", "focus-pane-id", &row.pane_id.to_string()])
-        .status();
+    jump_to_pane(&PaneHit {
+        id: row.pane_id,
+        tab_position: row.tab_position,
+        focused: false,
+    });
 }
 
 const DIM: &str = "\x1b[90m";
@@ -351,35 +347,166 @@ fn own_pane_id() -> Option<u32> {
     std::env::var("ZELLIJ_PANE_ID").ok()?.parse().ok()
 }
 
-fn find_other_viewer_pane(own_id: Option<u32>) -> Option<u32> {
-    let output = Command::new("zellij")
+/// A pane currently running `viewer`, located anywhere in the session.
+struct PaneHit {
+    id: u32,
+    tab_position: usize,
+    focused: bool,
+}
+
+fn agent_panes() -> Vec<PaneHit> {
+    let Some(output) = Command::new("zellij")
         .args(["action", "list-panes", "--all", "--json"])
+        .output()
+        .ok()
+    else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return Vec::new();
+    };
+    let Some(panes) = value.as_array() else {
+        return Vec::new();
+    };
+    panes
+        .iter()
+        .filter_map(|pane| {
+            let title = pane.get("title")?.as_str()?;
+            if title != PANE_TITLE {
+                return None;
+            }
+            let exited = pane.get("exited").and_then(|v| v.as_bool()).unwrap_or(true);
+            if exited {
+                return None;
+            }
+            Some(PaneHit {
+                id: pane.get("id")?.as_u64()? as u32,
+                tab_position: pane.get("tab_position")?.as_u64()? as usize,
+                focused: pane.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+fn current_tab_position() -> Option<usize> {
+    let output = Command::new("zellij")
+        .args(["action", "current-tab-info", "--json"])
         .output()
         .ok()?;
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let panes = value.as_array()?;
-    for pane in panes {
-        let title = pane.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let exited = pane.get("exited").and_then(|v| v.as_bool()).unwrap_or(true);
-        let id = pane.get("id").and_then(|v| v.as_u64()).map(|v| v as u32);
-        if title == PANE_TITLE && !exited && id != own_id {
-            return id;
-        }
+    value.get("position").and_then(|v| v.as_u64()).map(|v| v as usize)
+}
+
+/// `go-to-tab` first: Zellij's own `focus-pane-id` does not switch tabs
+/// (zj-herd hit the same gap on `focus_pane_with_id` inside the plugin API —
+/// the CLI action shares the underlying limitation).
+fn jump_to_pane(hit: &PaneHit) {
+    let _ = Command::new("zellij")
+        .args(["action", "go-to-tab", &(hit.tab_position + 1).to_string()])
+        .status();
+    let _ = Command::new("zellij")
+        .args(["action", "focus-pane-id", &hit.id.to_string()])
+        .status();
+}
+
+/// Turn this pane (opened tiled by the keybind's `Run`, or floating via the
+/// Alt+G spawn path) into a pinned right-hand overlay: float it if it's
+/// tiled, then set its coordinates — `--pinned true` keeps it on top even
+/// when unfocused. Coordinates are explicit so a pane that was tiled
+/// full-size doesn't float at fullscreen size.
+fn present_as_overlay(own: Option<u32>, already_floating: bool) {
+    let Some(id) = own else { return };
+    let id = id.to_string();
+    if !already_floating {
+        let _ = Command::new("zellij")
+            .args(["action", "toggle-pane-embed-or-floating", "-p", &id])
+            .status();
     }
-    None
+    let _ = Command::new("zellij")
+        .args([
+            "action",
+            "change-floating-pane-coordinates",
+            "-p",
+            &id,
+            "--width",
+            "40%",
+            "--height",
+            "100%",
+            "--x",
+            "60%",
+            "--y",
+            "0",
+            "--pinned",
+            "true",
+        ])
+        .status();
+}
+
+/// `--jump`: if the agents pane exists anywhere in the session, jump to its
+/// tab and focus it; if it doesn't, spawn one (floating) in the current tab.
+fn run_jump() -> bool {
+    let panes = agent_panes();
+    if let Some(hit) = panes.first() {
+        jump_to_pane(hit);
+        return true;
+    }
+    // Not open yet: spawn it. `--floating` tells the spawned instance it is
+    // already a floating pane so it pins itself instead of trying to float.
+    let exe = std::env::current_exe().unwrap_or_else(|_| "viewer".into());
+    let _ = Command::new("zellij")
+        .args(["action", "new-pane", "--floating", "--close-on-exit", "--name", PANE_TITLE, "--"])
+        .arg(&exe)
+        .arg("--floating")
+        .status();
+    true
+}
+
+/// Default (no args): the Alt+A toggle, aware of where the pane lives.
+/// - pane focused on us → close it
+/// - pane in this tab, not focused → focus it
+/// - pane in another tab → jump there (never kill it from afar — that was
+///   the old behaviour that made Alt+A a trap)
+/// - no pane anywhere → fall through and open one here
+fn run_toggle() -> bool {
+    let own = own_pane_id();
+    let cur_tab = current_tab_position();
+    let panes = agent_panes();
+    let here = panes
+        .iter()
+        .find(|p| Some(p.tab_position) == cur_tab)
+        .or_else(|| panes.iter().find(|p| Some(p.id) == own));
+    if let Some(hit) = here {
+        if own == Some(hit.id) && hit.focused {
+            let _ = Command::new("zellij")
+                .args(["action", "close-pane", "-p", &hit.id.to_string()])
+                .status();
+        } else {
+            jump_to_pane(hit);
+        }
+        return true;
+    }
+    if let Some(hit) = panes.first() {
+        jump_to_pane(hit);
+        return true;
+    }
+    false
 }
 
 fn main() -> std::io::Result<()> {
-    // The toggle: if another pane is already running `viewer` (identified by
-    // the pane title it sets below, not by the running process — matching
-    // on `pane_command` turned out to be unreliable), close it and exit
-    // immediately instead of opening a second one. This makes the keybind
-    // that launches `viewer` a genuine open/close toggle with no separate
-    // wrapper script needed.
-    if let Some(existing) = find_other_viewer_pane(own_pane_id()) {
-        let _ = Command::new("zellij")
-            .args(["action", "close-pane", "-p", &existing.to_string()])
-            .status();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--floating` is only ever set by `run_jump`'s spawn: that instance must
+    // run the UI directly. It can't go through `run_toggle` — the spawn is
+    // created with `--name zj-agents`, so the toggle would find itself and
+    // instantly close it.
+    let already_floating = args.iter().any(|a| a == "--floating");
+    let handled = if args.iter().any(|a| a == "--jump") {
+        run_jump()
+    } else if already_floating {
+        false
+    } else {
+        run_toggle()
+    };
+    if handled {
         return Ok(());
     }
 
@@ -389,6 +516,7 @@ fn main() -> std::io::Result<()> {
     let _ = Command::new("zellij")
         .args(["action", "rename-pane", PANE_TITLE])
         .status();
+    present_as_overlay(own_pane_id(), already_floating);
     let mut stdout = stdout();
     terminal::enable_raw_mode()?;
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;

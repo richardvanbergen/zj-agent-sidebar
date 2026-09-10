@@ -46,17 +46,8 @@ below, opens and closes it.
 
 ## Keybind
 
-`viewer` is its own toggle, in-process — no wrapper script. On launch it
-asks Zellij (`zellij action list-panes --all --json`) whether a pane titled
-`zj-agents` already exists anywhere in the session. If one does, it closes
-that pane and exits immediately instead of opening a second one. If not, it
-renames its own pane to `zj-agents` (`zellij action rename-pane`, called
-from inside itself — an OSC-2 title escape looked like the more obvious way
-to do this and didn't actually get picked up by Zellij's `list-panes`, so
-this is the one that's actually verified working) and starts normally.
-
-If you don't already have a `keybinds` block, you'll need one (see Zellij's
-own docs). Inside a `shared_except "locked"` block:
+Two keybinds, both just `Run` the same binary with different args — no
+wrapper scripts:
 
 ```kdl
 bind "Alt a" {
@@ -65,7 +56,24 @@ bind "Alt a" {
         name "agents"
     }
 }
+bind "Alt g" {
+    Run "/home/you/Code/zj-agent-state/target/release/viewer" "--jump" {
+        close_on_exit true
+        name "agents"
+    }
+}
 ```
+
+What each does (the logic lives in the binary; Zellij's floating panes are
+per-tab, so the pane lives in one tab and the keybinds move you to it):
+
+- **Alt+A** — the toggle. Pane focused on you → close it. Pane in this tab,
+  unfocused → focus it. Pane in another tab → **jump there** (it never
+  closes a pane living in a different tab). No pane anywhere → open one,
+  float it, pin it (`toggle-pane-embed-or-floating` +
+  `change-floating-pane-coordinates --pinned true`) as a right-hand overlay.
+- **Alt g** — jump to the agents pane from any tab; if it isn't open yet,
+  spawn it (floating) in the current tab first.
 
 Use the real absolute path to your clone — a keybind's `Run` command is
 **not** `~`-expanded (verified against Zellij's own KDL parser: only a
