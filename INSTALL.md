@@ -99,39 +99,33 @@ status pipe); Zellij prompts on first load. No `RunCommands`, no
 
 ## Keybind
 
-Two keybinds, both just `Run` the same binary with different args — no
-wrapper scripts:
+Both keybinds talk to the sidebar plugin over a pipe (`MessagePlugin`) —
+no wrapper scripts, no extra panes:
 
 ```kdl
 bind "Alt a" {
-    Run "/home/you/Code/zj-agent-state/target/release/viewer" {
-        close_on_exit true
-        name "agents"
+    MessagePlugin "zj-agents-sidebar" {
+        name "zj_agent_state.sidebar.v1"
+        payload "toggle"
     }
 }
 bind "Alt g" {
-    Run "/home/you/Code/zj-agent-state/target/release/viewer" "--jump" {
-        close_on_exit true
-        name "agents"
+    MessagePlugin "zj-agents-sidebar" {
+        name "zj_agent_state.sidebar.v1"
+        payload "jump"
     }
 }
 ```
 
-What each does (the logic lives in the binary; Zellij's floating panes are
-per-tab, so the pane lives in one tab and the keybinds move you to it):
+- **Alt a** — hide/show the sidebar. A hidden sidebar stays loaded (its
+  state keeps updating), so showing it again is instant. Works from any
+  tab.
+- **Alt g** — jump to the selected agent's pane: switches to its tab and
+  focuses it. The sidebar is also directly interactive: focus it (pane
+  navigation) and use Up/Down to move the selection, Enter to jump.
 
-- **Alt+A** — the toggle. Pane focused on you → close it. Pane in this tab,
-  unfocused → focus it. Pane in another tab → **jump there** (it never
-  closes a pane living in a different tab). No pane anywhere → open one,
-  float it, pin it (`toggle-pane-embed-or-floating` +
-  `change-floating-pane-coordinates --pinned true`) as a right-hand overlay.
-- **Alt g** — jump to the agents pane from any tab; if it isn't open yet,
-  spawn it (floating) in the current tab first.
-
-Use the real absolute path to your clone — a keybind's `Run` command is
-**not** `~`-expanded (verified against Zellij's own KDL parser: only a
-layout pane's `command=` attribute gets `shellexpand`, keybind actions
-don't).
+The `plugins` alias in `config.kdl` must use the real absolute `file:` path
+to the wasm — plugin locations are **not** `~`-expanded everywhere.
 
 ## Wire up agent hooks
 
