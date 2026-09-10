@@ -25,7 +25,9 @@
 //! - The keybind `jump` (Alt+G) is broadcast to *every* instance, so it
 //!   deliberately ignores per-instance selection: every instance computes
 //!   the same top-severity row and issues the identical jump — consistent
-//!   last-writer-wins, no cross-tab coordination needed.
+//!   last-writer-wins, no cross-tab coordination needed. Interactive
+//!   selection (arrow keys + Enter) jumps to the selected row and only
+//!   ever reaches the focused instance, so it can't race.
 //! - Shared state: status pushes and pane/tab events are delivered
 //!   selectively (a fresh instance starts from nothing), so every instance
 //!   also reads `watcher`'s session state file — on load and again every
@@ -157,6 +159,21 @@ impl Sidebar {
         let selected = self.selected.min(rows.len() - 1);
         self.jump_to_row(&rows[selected]);
     }
+
+    /// The keybind `jump` is broadcast to every instance, and each would
+    /// otherwise jump to *its own* selection — background instances default
+    /// to row 0, so whichever spoke last won, usually the wrong pane. So a
+    /// broadcast jump ignores selection entirely: every instance computes
+    /// the same top-severity row (the list is already sorted worst-first)
+    /// and issues the identical jump. Selection-based jumping stays in
+    /// Enter/arrow keys, which only ever reach the focused instance.
+    fn jump_to_attention(&self) {
+        let rows = self.flat();
+        if rows.is_empty() {
+            return;
+        }
+        self.jump_to_row(&rows[0]);
+    }
 }
 
 register_plugin!(Sidebar);
@@ -271,7 +288,7 @@ impl ZellijPlugin for Sidebar {
                     show_self(false);
                     self.hidden = false;
                 }
-                Some("jump") => self.jump_to_selected(),
+                Some("jump") => self.jump_to_attention(),
                 _ => {}
             }
             return true;
