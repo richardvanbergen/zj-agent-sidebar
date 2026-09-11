@@ -7,7 +7,8 @@ silently clobbering something you wrote yourself.
 
 - Rust + `rustup target add wasm32-wasip1`
 - Zellij ≥ 0.45 (older than 0.44.3 won't load the wasm at all)
-- python3 (all three hook scripts use it)
+- `jq` (the Claude Code hook is POSIX shell + jq, no python; the Codex and
+  OpenCode hooks still use python3)
 - macOS: the chime uses `afplay` (built in). On Linux, edit
   `CHIME_COMMAND` in `watcher/src/main.rs` to `paplay`/`aplay` and rebuild.
 

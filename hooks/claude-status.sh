@@ -10,6 +10,9 @@
 #     "Stop":              [{ "hooks": [{ "type": "command",
 #        "command": "sh ~/Code/zj-agent-state/hooks/claude-status.sh done" }] }]
 #   }
+#
+# POSIX shell + jq only. No python dependency: this hook runs on minimal
+# Nix/SSH/sandboxed profiles where python3 is often absent.
 
 set -eu
 
@@ -17,7 +20,7 @@ state="${1:-idle}"
 
 [ -n "${ZELLIJ_PANE_ID:-}" ] || exit 0
 command -v zellij >/dev/null 2>&1 || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
 
 payload="$(cat 2>/dev/null || true)"
 
@@ -25,41 +28,47 @@ case "$payload" in
   *'"agent_id"'*) exit 0 ;;
 esac
 
-printf '%s' "$payload" | python3 -c '
-import json, os, subprocess, sys
+# Invalid or empty JSON -> {}
+data="$(printf '%s' "$payload" | jq -c 'if type == "object" then . else {} end' 2>/dev/null || true)"
+if [ -z "$data" ]; then data='{}'; fi
 
-state = sys.argv[1]
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = {}
+out="$(printf '%s' "$data" | jq -r --arg state "$state" '
+  def trimmed: gsub("^\\s+|\\s+$"; "");
+  def collapse: trimmed | gsub("\\s+"; " ") | .[0:160];
+  def lastline:
+    split("\n")
+    | map(select(trimmed != ""))
+    | map(trimmed)
+    | last // "";
+  . as $d | $state as $s |
+  if $s == "done" then
+    (($d.last_assistant_message // $d.message // "") as $raw |
+     ($raw | lastline) as $q |
+     if $q | endswith("?") then
+       {status: "blocked", message: ($q | collapse)}
+     else
+       {status: "done", message: ($raw | collapse)}
+     end)
+  elif $s == "blocked" then
+    (($d.message // "") | collapse) as $m |
+    if $m == "" or $m == "Claude needs attention"
+       or $m == "Claude Code needs your attention"
+    then empty
+    else {status: "blocked", message: $m}
+    end
+  elif $s == "working" then
+    {status: "working", message: (($d.prompt // "") | collapse)}
+  else
+    {status: $s, message: ""}
+  end
+')"
 
-GENERIC = {"Claude needs attention", "Claude Code needs your attention"}
+[ -n "$out" ] || exit 0
 
-def trailing_question(text):
-    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
-    return lines[-1] if lines and lines[-1].endswith("?") else None
+status="$(printf '%s\n' "$out" | sed -n '1p')"
+message="$(printf '%s\n' "$out" | sed -n '2p')"
 
-status = state
-msg = ""
+body="$(jq -cn --arg pane "$ZELLIJ_PANE_ID" --arg status "$status" --arg message "$message" \
+  '{pane_id: ($pane | tonumber), status: $status, agent: "claude", message: $message}')"
 
-if state == "done":
-    msg = (data.get("last_assistant_message") or data.get("message") or "").strip()
-    q = trailing_question(msg)
-    if q:
-        status, msg = "blocked", q
-elif state == "blocked":
-    msg = (data.get("message") or "").strip()
-    if not msg or msg in GENERIC:
-        sys.exit(0)
-elif state == "working":
-    msg = (data.get("prompt") or "").strip()
-
-msg = " ".join(msg.split())[:160]
-pane_id = os.environ.get("ZELLIJ_PANE_ID", "")
-body = json.dumps({"pane_id": int(pane_id), "status": status, "agent": "claude", "message": msg})
-subprocess.run(
-    ["zellij", "pipe", "--name", "zj_agent_state.status.v1", "--", body],
-    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
-' "$state" || true
+zellij pipe --name zj_agent_state.status.v1 -- "$body" >/dev/null 2>&1 || true
