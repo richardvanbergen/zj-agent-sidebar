@@ -41,7 +41,7 @@ out="$(printf '%s' "$data" | jq -r --arg state "$state" '
     | map(trimmed)
     | last // "";
   . as $d | $state as $s |
-  if $s == "done" then
+  (if $s == "done" then
     (($d.last_assistant_message // $d.message // "") as $raw |
      ($raw | lastline) as $q |
      if $q | endswith("?") then
@@ -60,7 +60,7 @@ out="$(printf '%s' "$data" | jq -r --arg state "$state" '
     {status: "working", message: (($d.prompt // "") | collapse)}
   else
     {status: $s, message: ""}
-  end
+  end) | "\(.status)\n\(.message)"
 ')"
 
 [ -n "$out" ] || exit 0

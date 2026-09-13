@@ -2218,6 +2218,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm 0.28.1",
  "fd-lock",
+ "libc",
  "serde_json",
  "shared",
  "terminal-colorsaurus",

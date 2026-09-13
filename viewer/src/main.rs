@@ -326,6 +326,23 @@ fn own_pane_id() -> Option<u32> {
     std::env::var("ZELLIJ_PANE_ID").ok()?.parse().ok()
 }
 
+/// True once this process has been reparented to init (PPID 1) — i.e.
+/// whatever zellij process spawned it is gone. Found in the wild: several
+/// `viewer` instances stuck at ~90% CPU for days, all sharing PPID 1, with
+/// no owning session left to show them in or kill them. An orphan like that
+/// has nothing legitimate left to do, so treat losing our parent as a
+/// shutdown signal in its own right rather than trusting terminal I/O to
+/// notice the session is gone.
+#[cfg(unix)]
+fn orphaned() -> bool {
+    unsafe { libc::getppid() == 1 }
+}
+
+#[cfg(not(unix))]
+fn orphaned() -> bool {
+    false
+}
+
 /// A pane currently running `viewer`, located anywhere in the session.
 struct PaneHit {
     id: u32,
@@ -512,6 +529,9 @@ fn main() -> std::io::Result<()> {
     let mut frame = 0usize;
     let result = (|| -> std::io::Result<()> {
         loop {
+            if orphaned() {
+                break;
+            }
             let snapshot = read_snapshot(&path);
             let found = snapshot.is_some();
             let groups = shared::grouped_rows(snapshot.map(|s| s.rows).unwrap_or_default());

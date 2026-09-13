@@ -22,12 +22,16 @@
 //!   agent's pane (`switch_tab_to` + `show_pane_with_id`). Key events are
 //!   only ever delivered to the focused instance, so per-instance selection
 //!   never races across tabs.
-//! - The keybind `jump` (Alt+G) is broadcast to *every* instance, so it
-//!   deliberately ignores per-instance selection: every instance computes
-//!   the same top-severity row and issues the identical jump — consistent
-//!   last-writer-wins, no cross-tab coordination needed. Interactive
-//!   selection (arrow keys + Enter) jumps to the selected row and only
-//!   ever reaches the focused instance, so it can't race.
+//! - The keybind `jump` (Alt+G) is a deliberate no-op: the sidebar is
+//!   already visible in every tab, so there's nothing to jump *to*, and
+//!   focus only ever moves when the user explicitly picks a row with
+//!   Enter. (An earlier version tried to have the broadcast focus "the
+//!   sidebar instance in your current tab" — but every instance's idea of
+//!   "am I the active tab" only updates while it truly is active, so a
+//!   background instance that was active once keeps believing it still is
+//!   forever after; several instances would fire, and focus landed
+//!   wherever zellij happened to process first — in practice, always the
+//!   first tab.)
 //! - Shared state: status pushes and pane/tab events are delivered
 //!   selectively (a fresh instance starts from nothing), so every instance
 //!   also reads `watcher`'s session state file — on load and again every
@@ -82,14 +86,6 @@ struct Sidebar {
     has_state_file: bool,
     /// Session name, lazily resolved — see `ensure_session`.
     session: Option<String>,
-    /// Our own plugin pane id, lazily resolved (get_plugin_ids panics during
-    /// load, same as all host queries).
-    own_pane_id: Option<u32>,
-    /// plugin-pane id -> tab position, from PaneUpdate (which includes
-    /// plugin panes even though the join state filters them out).
-    plugin_pane_tabs: BTreeMap<u32, usize>,
-    /// Position of the active tab, from TabUpdate.
-    active_tab: Option<usize>,
 }
 
 impl Sidebar {
@@ -159,27 +155,6 @@ impl Sidebar {
         show_pane_with_id(PaneId::Terminal(row.pane_id), false, true);
     }
 
-    /// The keybind `jump` is broadcast to every instance. "Jump to the
-    /// sidebar" means: focus *this* pane — but only the instance living in
-    /// the active tab may act, or every tab's instance would fight over
-    /// focus. Each instance knows its own pane id (`get_plugin_ids` returns
-    /// the pane id for plugin panes) and, from PaneUpdate, which tab that
-    /// pane is in; the one whose tab matches the active tab focuses itself.
-    /// (Stale geometry in background tabs is safe here: only the instance
-    /// receiving fresh PaneUpdate/TabUpdate events — i.e. the active tab's
-    /// — ever sees a match.)
-    fn focus_self_in_active_tab(&mut self) {
-        let Some(own) = self.own_pane_id else {
-            return;
-        };
-        let Some(&tab) = self.plugin_pane_tabs.get(&own) else {
-            return;
-        };
-        if self.active_tab == Some(tab) {
-            show_pane_with_id(PaneId::Plugin(own), false, true);
-        }
-    }
-
     fn jump_to_selected(&self) {
         let rows = self.flat();
         if rows.is_empty() {
@@ -243,45 +218,33 @@ impl ZellijPlugin for Sidebar {
                         self.ensure_watcher();
                     }
                 }
-                if self.own_pane_id.is_none() {
-                    self.own_pane_id = Some(get_plugin_ids().plugin_id);
-                }
                 set_timeout(BACKSTOP_TICK_SECS);
                 true
             }
             Event::PaneUpdate(manifest) => {
-                let mut plugin_pane_tabs = BTreeMap::new();
-                let mut panes = Vec::new();
-                for (tab_position, pane_infos) in manifest.panes {
-                    for pane in pane_infos {
-                        if pane.is_plugin {
-                            plugin_pane_tabs.insert(pane.id, tab_position);
-                        }
-                        panes.push(shared::PaneInfo {
+                let panes = manifest
+                    .panes
+                    .into_iter()
+                    .flat_map(|(tab_position, pane_infos)| {
+                        pane_infos.into_iter().map(move |pane| shared::PaneInfo {
                             id: pane.id,
                             title: pane.title,
                             tab_position,
                             is_focused: pane.is_focused,
                             is_plugin: pane.is_plugin,
-                        });
-                    }
-                }
-                self.plugin_pane_tabs = plugin_pane_tabs;
+                        })
+                    })
+                    .collect();
                 self.state.apply_panes(panes);
                 true
             }
             Event::TabUpdate(tab_infos) => {
                 let tabs = tab_infos
                     .into_iter()
-                    .map(|tab| {
-                        if tab.active {
-                            self.active_tab = Some(tab.position);
-                        }
-                        shared::TabInfo {
-                            position: tab.position,
-                            name: tab.name,
-                            active: tab.active,
-                        }
+                    .map(|tab| shared::TabInfo {
+                        position: tab.position,
+                        name: tab.name,
+                        active: tab.active,
                     })
                     .collect();
                 self.state.apply_tabs(tabs);
@@ -314,7 +277,7 @@ impl ZellijPlugin for Sidebar {
                     show_self(false);
                     self.hidden = false;
                 }
-                Some("jump") => self.focus_self_in_active_tab(),
+                // "jump" is intentionally a no-op — see the module doc.
                 _ => {}
             }
             return true;
